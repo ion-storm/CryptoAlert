@@ -10,8 +10,10 @@
 
     .NOTES
         Author: C. Mohr
-        Version: 1.0 Release date: 8/20/2015
+        Version: 1.1 Release date: 8/24/2015
         Released under the GNU GPLv3
+
+	v1.1 adds the ability to read the badword list from a file for easier updates. Initial file is created at C:\windows\CryptoWords.txt. Also added a CC to the administrator for notifications and included unblock instructions in the event message.
 
         This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
     .LINK
@@ -25,9 +27,9 @@
         C:\PS> .\InstallCryptoAlert.ps1 -MailServer mail.comain.com -AdminEmail admin@mail.domain.com
         This example will configure FSRM with your mailserver and admin email the from address with automatically be FRSM@servername.domain.com. It will then configure filescreens and drop the CryptoKicknBlock.ps1 in C:\Windows\ for use by the filescreen. 
     .PARAMETER MailServer
-		    Specifies the mail server such as mail.domain.com
+    Specifies the mail server such as mail.domain.com
     .PARAMETER AdminEmail
-		    Specifies the administrative email address such as admin@mail.domain.com
+    Specifies the administrative email address such as admin@mail.domain.com
   #>
 
 
@@ -36,6 +38,7 @@ Param(
   [string]$AdminEmail 
 )
 
+#Check if FSRM is installed and install it if not
 If (-not(Get-WindowsFeature FS-Resource-Manager | Where-Object {$_.Installed -match “True”})) {
 	If (-not $MailServer -or -not $AdminEmail) {
 		write-host "FSRM is not installed so you must provide MailServer and AdminEmail parameters"
@@ -49,15 +52,34 @@ If (-not(Get-WindowsFeature FS-Resource-Manager | Where-Object {$_.Installed -ma
 
 $drives = gwmi win32_logicaldisk -filter DriveType=3 | Select -ExpandProperty DeviceID
 
-New-FsrmFileGroup -Name "CryptoWall File Monitor" -IncludePattern @("*DECRYPT_*", "*_DECRYPT*","*Restore_files*")
+#Create intial file containing the keywords we are looking for
+$CryptoKeyWordsFile = $env:windir + "\CryptoWords.txt"
+NI  $CryptoKeyWordsFile -type file -force
+$Keywords = @'
+*Decrypt_*
+*_Decrypt*
+*restore_files*
+'@
+AC $CryptoKeyWordsFile $Keywords
+
+#Verify just in case file wasn't created
+if (-not (Test-Path $CryptoKeyWordsFile)) {
+   Write-Host ERROR: $CryptoKeyWordsFile  "missing or unreadable, fix and try again"
+   exit
+}
+
+#Create file screens and actions tied to them
+$CryptoKeyWords = Get-Content $CryptoKeyWordsFile
+New-FsrmFileGroup -Name "CryptoWall File Monitor" -IncludePattern @($CryptoKeyWords)
 foreach ($drive in $drives){
-    $Notification = New-FsrmAction -Type Event -EventType Warning -Body "User [Source Io Owner] attempted to save [Source File Path] to [File Screen Path] on the [Server] server. This file is in the [Violated File Group] file group. This file could be an indication of CryptoWall infection and should be investigated immediately." -RunlimitInterval 0
+    $Notification = New-FsrmAction -Type Event -EventType Warning -Body "User [Source Io Owner] attempted to save [Source File Path] to [File Screen Path] on the [Server] server. This file is in the [Violated File Group] file group. This file could be an indication of CryptoWall infection and should be investigated immediately. Once cleared you can unblock a user by running the following command from an elevated PowerShell prompt C:\Windows\CryptoBlocknKick.ps1 -FileOwner USERNAME -Unlock y" -RunlimitInterval 0
 	$Command = New-FsrmAction Command -Command C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -CommandParameters '-executionpolicy bypass -file C:\Windows\CryptoKicknBlock.ps1 -FileOwner [Source Io Owner]' -SecurityLevel LocalSystem -KillTimeOut 0 -RunLimitInterval 0 -WorkingDirectory C:\Windows\System32\WindowsPowerShell\v1.0\
 	$EmailUser = New-FsrmAction -Type Email `
-		-RunlimitInterval 5 `
+        -RunlimitInterval 5 `
 		-MailTo "[Source Io Owner Email]" `
-		-Subject "Possible maleware detected. Contact IT immediately!" `
-		-Body "User [Source Io Owner] attempted to save [Source File Path] to [File Screen Path] on the [Server] server. This file is in the [Violated File Group] file group. This file could be an indication of CryptoWall infection. To prevent possible futher infection and file corruption your access to [Server] has been blocked. Please contact IT immediately for investgation and to be unblocked."
+        -MailCC "[Admin Email]" `
+		-Subject "Possible maleware detected by [Source Io Owner] on [Server]" `
+		-Body "User [Source Io Owner] attempted to save [Source File Path] to [File Screen Path] on the [Server] server. This file is in the [Violated File Group] file group. This file could be an indication of CryptoWall infection. To prevent possible futher infection and file corruption access to [Server] has been blocked. Please contact IT immediately for investgation and to be unblocked."
     New-FsrmFileScreen -Path "$drive" -Active: $false -IncludeGroup "CryptoWall File Monitor" -Notification @($Notification, $Command, $EmailUser)
 }
 
@@ -90,9 +112,9 @@ $KickScript = @'
     .LINK
         http://www.gnu.org/licenses/
     .PARAMETER FileOwner
-		    Specifies the AD username of the account to block
+    Specifies the AD username of the account to block
     .PARAMETER UnLock
-		    Omit to lock user out, any value will cause an unlock
+    Omit to lock user out, any value will cause an unlock
   #>
 Param(
   [Parameter(Mandatory=$true)]
